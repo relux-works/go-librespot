@@ -1,64 +1,41 @@
-name: Release
+name: release
 
 on:
   push:
-    tags: [ 'v*' ]
-    branches: [ 'master' ]
-  pull_request:
-    branches: [ 'master' ]
+    tags: ["v*"]
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        variant: [ 'x86_64', 'arm64', 'armv6', 'armv6_rpi' ]
+  release:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Compile binary
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Reproducible cross builds (CGO off)
         run: |
-          mkdir -p /tmp/out
-          ./crosscompile.sh ${{ matrix.variant }}
-          mv go-librespot-${{ matrix.variant }} go-librespot
-          tar -zcvf /tmp/out/go-librespot_linux_${{ matrix.variant }}.tar.gz go-librespot README.md
-
-      - name: Upload compiled binary
-        uses: actions/upload-artifact@v4
+          set -e
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            GOOS=${target%/*}; GOARCH=${target#*/}
+            EXT=$([ "$GOOS" = windows ] && echo .exe || true)
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
+              go build -trimpath -ldflags="-s -w -buildid=" \
+              -o dist/go-librespot-$GOOS-$GOARCH$EXT ./cmd/daemon
+          done
+          (cd dist && shasum -a 256 * > SHA256SUMS)
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
         with:
-          name: binaries-${{ matrix.variant }}
-          path: /tmp/out
-          retention-days: 7
-
-  publish:
-    runs-on: ubuntu-24.04
-    if: startsWith(github.ref, 'refs/tags/')
-    needs:
-      - build
-    steps:
-      - name: Download compiled binaries
-        uses: actions/download-artifact@v4
+          subject-path: dist/go-librespot-*
+      - name: Create release
+        uses: softprops/action-gh-release@v2
         with:
-          pattern: binaries-*
-          path: /tmp/out
-          merge-multiple: true
-
-      - name: Generate changelog
-        uses: jaywcjlove/changelog-generator@main
-        id: changelog
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          filter-author: (dependabot|renovate\\[bot\\]|dependabot\\[bot\\]|Renovate Bot)
-          filter: '[R|r]elease[d]\s+[v|V]\d(\.\d+){0,2}'
-
-      - name: Release binaries
-        uses: softprops/action-gh-release@v1
-        with:
-          body: |
-            ${{ steps.changelog.outputs.compareurl }}
-            ${{ steps.changelog.outputs.changelog }}
-          files: /tmp/out/*
+          files: |
+            dist/*
+          generate_release_notes: true

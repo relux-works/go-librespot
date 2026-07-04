@@ -11,17 +11,18 @@ require (
 	github.com/godbus/dbus/v5 v5.2.0
 	github.com/gofrs/flock v0.13.0
 	github.com/grandcat/zeroconf v1.0.0
+	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/jfreymuth/pulse v0.1.2-0.20241102120944-4ffb35054b53
 	github.com/knadh/koanf/parsers/yaml v1.1.0
 	github.com/knadh/koanf/providers/confmap v1.0.0
 	github.com/knadh/koanf/providers/file v1.2.0
 	github.com/knadh/koanf/providers/posflag v1.0.1
 	github.com/knadh/koanf/v2 v2.3.0
+	github.com/mewkiz/flac v1.0.13
 	github.com/rs/cors v1.11.1
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.11.1
-	github.com/xlab/vorbis-go v0.0.0-20210911202351-b5b85f1ec645
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.46.0
 	golang.org/x/exp v0.0.0-20251209150349-8475f28825e9
@@ -36,7 +37,11 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/icza/bitio v1.1.0 // indirect
+	github.com/jfreymuth/vorbis v1.0.2 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect
+	github.com/mewkiz/pkg v0.0.0-20250417130911-3f050ff8c56d // indirect
+	github.com/mewpkg/term v0.0.0-20241026122259-37a80af23985 // indirect
 	github.com/miekg/dns v1.1.69 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect

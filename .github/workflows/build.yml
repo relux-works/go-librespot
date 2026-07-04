@@ -1,0 +1,48 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Generate decoder fixtures
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          mkdir -p /tmp/decoder-test
+          ffmpeg -y -loglevel error -f lavfi -i "sine=frequency=440:duration=2:sample_rate=44100" -ac 2 -c:a flac /tmp/decoder-test/test.flac
+          ffmpeg -y -loglevel error -f lavfi -i "sine=frequency=440:duration=2:sample_rate=44100" -ac 2 -c:a libvorbis /tmp/decoder-test/test.ogg
+      - run: go vet ./...
+      - run: go test ./...
+
+  cross:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build (reproducible, CGO off)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags="-s -w -buildid=" -o daemon-${{ matrix.goos }}-${{ matrix.goarch }}$([ "${{ matrix.goos }}" = windows ] && echo .exe) ./cmd/daemon

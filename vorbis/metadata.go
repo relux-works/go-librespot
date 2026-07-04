@@ -8,7 +8,6 @@ import (
 	"io"
 
 	librespot "github.com/devgianlu/go-librespot"
-	"github.com/xlab/vorbis-go/vorbis"
 )
 
 const (
@@ -48,52 +47,51 @@ type MetadataPage struct {
 	hasReplayGain bool
 }
 
+// readFirstOggPage parses one Ogg page header by hand (pure Go, relux-works
+// fork change — this was the last cgo dependency). Returns the first packet's
+// body and the total page length in bytes.
+func readFirstOggPage(rr io.Reader) (packet []byte, pageLen int64, err error) {
+	head := make([]byte, 27)
+	if _, err := io.ReadFull(rr, head); err != nil {
+		return nil, 0, fmt.Errorf("failed reading vorbis stream head: %w", err)
+	}
+	if !bytes.Equal(head[0:4], []byte("OggS")) || head[4] != 0 {
+		return nil, 0, errors.New("vorbis: not a valid Ogg bitstream")
+	}
+	nSegs := int(head[26])
+	lacing := make([]byte, nSegs)
+	if _, err := io.ReadFull(rr, lacing); err != nil {
+		return nil, 0, fmt.Errorf("failed reading ogg lacing table: %w", err)
+	}
+	bodyLen := 0
+	firstPacketLen := 0
+	packetDone := false
+	for _, l := range lacing {
+		bodyLen += int(l)
+		if !packetDone {
+			firstPacketLen += int(l)
+			if l < 255 {
+				packetDone = true
+			}
+		}
+	}
+	body := make([]byte, bodyLen)
+	if _, err := io.ReadFull(rr, body); err != nil {
+		return nil, 0, fmt.Errorf("failed reading ogg page body: %w", err)
+	}
+	return body[:firstPacketLen], int64(27 + nSegs + bodyLen), nil
+}
+
 func ExtractMetadataPage(log librespot.Logger, r io.ReaderAt, limit int64) (librespot.SizedReadAtSeeker, *MetadataPage, error) {
-	var syncState vorbis.OggSyncState
-	vorbis.OggSyncInit(&syncState)
-
-	defer func() {
-		vorbis.OggSyncClear(&syncState)
-		syncState.Free()
-	}()
-
 	rr := io.NewSectionReader(r, 0, limit)
 
-	// read enough bytes for the first ogg packet to fit
-	buf := vorbis.OggSyncBuffer(&syncState, 512)
-	n, err := io.ReadFull(rr, buf[:512])
-	vorbis.OggSyncWrote(&syncState, n)
+	firstPacket, pageLen, err := readFirstOggPage(rr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed reading vorbis stream head")
+		return nil, nil, err
 	}
-
-	var page vorbis.OggPage
-	if ret := vorbis.OggSyncPageout(&syncState, &page); ret != 1 {
-		return nil, nil, errors.New("vorbis: not a valid Ogg bitstream")
-	}
-
-	var streamState vorbis.OggStreamState
-	vorbis.OggStreamInit(&streamState, vorbis.OggPageSerialno(&page))
-
-	defer func() {
-		vorbis.OggStreamClear(&streamState)
-		streamState.Free()
-	}()
-
-	if ret := vorbis.OggStreamPagein(&streamState, &page); ret < 0 {
-		return nil, nil, errors.New("vorbis: the supplied page does not belong this Vorbis stream")
-	}
-
-	var packet vorbis.OggPacket
-	if ret := vorbis.OggStreamPacketout(&streamState, &packet); ret != 1 {
-		return nil, nil, errors.New("vorbis: unable to fetch initial Vorbis packet from the first page")
-	}
-
-	defer packet.Free()
 
 	// we have the ogg packet, check it is the metadata page
-	packet.Deref()
-	body := bytes.NewReader(packet.Packet[:packet.Bytes])
+	body := bytes.NewReader(firstPacket)
 	if b, _ := body.ReadByte(); b != 0x81 {
 		return nil, nil, fmt.Errorf("invalid metadata page")
 	}
@@ -179,8 +177,7 @@ func ExtractMetadataPage(log librespot.Logger, r io.ReaderAt, limit int64) (libr
 	}
 
 	// return a new stream without the metadata page
-	syncState.Deref()
-	return io.NewSectionReader(r, int64(syncState.Returned), limit-int64(syncState.Returned)), &metadata, nil
+	return io.NewSectionReader(r, pageLen, limit-pageLen), &metadata, nil
 }
 
 func (m MetadataPage) GetSeekPosition(samplesPos int64) int64 {
