@@ -23,7 +23,8 @@ jobs:
           mkdir -p /tmp/decoder-test
           ffmpeg -y -loglevel error -f lavfi -i "sine=frequency=440:duration=2:sample_rate=44100" -ac 2 -c:a flac /tmp/decoder-test/test.flac
           ffmpeg -y -loglevel error -f lavfi -i "sine=frequency=440:duration=2:sample_rate=44100" -ac 2 -c:a libvorbis /tmp/decoder-test/test.ogg
-      - run: go vet ./...
+      # upstream mpris dbus interfaces trip vet's io.Seeker signature check
+      - run: go vet $(go list ./... | grep -v /mpris)
       - run: go test ./...
 
   cross:
