@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -57,11 +58,21 @@ type Player struct {
 
 	cmd chan playerCmd
 	ev  chan Event
+	// done is closed by manageLoop (the single owner of the command loop)
+	// when it exits. Senders select on it instead of ever observing a closed
+	// cmd channel: during Spotify transfer storms Close() races Play/Stop/
+	// SetVolume from other goroutines, and a close(p.cmd) here was a live
+	// "panic: send on closed channel" in production.
+	done chan struct{}
 
 	volumeSteps uint32
 
 	startedPlaying time.Time
 }
+
+// ErrPlayerClosed is returned by player commands issued after (or racing)
+// Close: the command loop is gone and the command was dropped.
+var ErrPlayerClosed = errors.New("player closed")
 
 type playerCmdType int
 
@@ -201,13 +212,26 @@ func NewPlayer(opts *Options) (*Player, error) {
 			})
 		},
 
-		cmd: make(chan playerCmd),
-		ev:  make(chan Event, 128),
+		cmd:  make(chan playerCmd),
+		ev:   make(chan Event, 128),
+		done: make(chan struct{}),
 	}
 
 	go p.manageLoop()
 
 	return p, nil
+}
+
+// sendCmd delivers a command to manageLoop, or reports false if the loop has
+// exited (owner-closes pattern: only manageLoop signals termination, senders
+// never touch a closed channel).
+func (p *Player) sendCmd(cmd playerCmd) bool {
+	select {
+	case p.cmd <- cmd:
+		return true
+	case <-p.done:
+		return false
+	}
 }
 
 func (p *Player) manageLoop() {
@@ -360,7 +384,11 @@ loop:
 		}
 	}
 
-	close(p.cmd)
+	// Owner closes: signal termination FIRST so senders blocked on p.cmd bail
+	// out immediately, then clean up. p.cmd itself is never closed — a send
+	// racing this exit lands in the senders' <-p.done select arm instead of
+	// panicking.
+	close(p.done)
 
 	_ = source.Close()
 
@@ -382,18 +410,22 @@ func (p *Player) Receive() <-chan Event {
 	return p.ev
 }
 
+// Close is idempotent and safe to race with any other command: the first
+// accepted close stops manageLoop; everyone else observes p.done.
 func (p *Player) Close() {
-	p.cmd <- playerCmd{typ: playerCmdClose}
+	p.sendCmd(playerCmd{typ: playerCmdClose})
 }
 
 func (p *Player) SetVolume(val uint32) {
 	vol := float32(val) / MaxStateVolume
-	p.cmd <- playerCmd{typ: playerCmdVolume, data: vol}
+	p.sendCmd(playerCmd{typ: playerCmdVolume, data: vol}) // dropped after close
 }
 
 func (p *Player) Play() error {
 	resp := make(chan any, 1)
-	p.cmd <- playerCmd{typ: playerCmdPlay, resp: resp}
+	if !p.sendCmd(playerCmd{typ: playerCmdPlay, resp: resp}) {
+		return ErrPlayerClosed
+	}
 	if err := <-resp; err != nil {
 		return err.(error)
 	}
@@ -403,7 +435,9 @@ func (p *Player) Play() error {
 
 func (p *Player) Pause() error {
 	resp := make(chan any, 1)
-	p.cmd <- playerCmd{typ: playerCmdPause, resp: resp}
+	if !p.sendCmd(playerCmd{typ: playerCmdPause, resp: resp}) {
+		return ErrPlayerClosed
+	}
 	if err := <-resp; err != nil {
 		return err.(error)
 	}
@@ -413,13 +447,17 @@ func (p *Player) Pause() error {
 
 func (p *Player) Stop() {
 	resp := make(chan any, 1)
-	p.cmd <- playerCmd{typ: playerCmdStop, resp: resp}
+	if !p.sendCmd(playerCmd{typ: playerCmdStop, resp: resp}) {
+		return
+	}
 	<-resp
 }
 
 func (p *Player) SeekMs(pos int64) error {
 	resp := make(chan any, 1)
-	p.cmd <- playerCmd{typ: playerCmdSeek, data: pos, resp: resp}
+	if !p.sendCmd(playerCmd{typ: playerCmdSeek, data: pos, resp: resp}) {
+		return ErrPlayerClosed
+	}
 	if err := <-resp; err != nil {
 		return err.(error)
 	}
@@ -429,14 +467,18 @@ func (p *Player) SeekMs(pos int64) error {
 
 func (p *Player) PositionMs() int64 {
 	resp := make(chan any, 1)
-	p.cmd <- playerCmd{typ: playerCmdPosition, resp: resp}
+	if !p.sendCmd(playerCmd{typ: playerCmdPosition, resp: resp}) {
+		return 0
+	}
 	pos := <-resp
 	return pos.(int64)
 }
 
 func (p *Player) SetPrimaryStream(source librespot.AudioSource, paused, drop bool) error {
 	resp := make(chan any)
-	p.cmd <- playerCmd{typ: playerCmdSet, data: playerCmdDataSet{source: source, primary: true, paused: paused, drop: drop}, resp: resp}
+	if !p.sendCmd(playerCmd{typ: playerCmdSet, data: playerCmdDataSet{source: source, primary: true, paused: paused, drop: drop}, resp: resp}) {
+		return ErrPlayerClosed
+	}
 	if err := <-resp; err != nil {
 		return err.(error)
 	}
@@ -446,7 +488,9 @@ func (p *Player) SetPrimaryStream(source librespot.AudioSource, paused, drop boo
 
 func (p *Player) SetSecondaryStream(source librespot.AudioSource) {
 	resp := make(chan any)
-	p.cmd <- playerCmd{typ: playerCmdSet, data: playerCmdDataSet{source: source, primary: false}, resp: resp}
+	if !p.sendCmd(playerCmd{typ: playerCmdSet, data: playerCmdDataSet{source: source, primary: false}, resp: resp}) {
+		return
+	}
 	<-resp
 }
 
